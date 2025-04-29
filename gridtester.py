@@ -86,7 +86,7 @@ def create_grid_from_extremes(point_cloud, step_size=0.05):
     
     return grid_info
 
-def compute_grid_z_numpy(point_cloud, grid_info, radius=0.1):
+def compute_grid_z_numpy(point_cloud, grid_info, radius=0.05):
     """Compute average z-values for grid points using NumPy and KDTree."""
     # Build KDTree using only X and Y coordinates
     tree = KDTree(point_cloud[:, :2])
@@ -145,7 +145,7 @@ def compute_grid_z_torch(point_cloud, grid_info, radius=0.1):
     
     return zz
 
-def compute_grid_z_torch_optimized(point_cloud, grid_info, radius=0.025):
+def compute_grid_z_torch_optimized(point_cloud, grid_info, radius=0.05):
     """Memory-efficient GPU implementation with chunked processing."""
     # Move data to GPU
     point_cloud_gpu = torch.tensor(point_cloud, dtype=torch.float32, device="cuda")
@@ -192,11 +192,27 @@ def compute_grid_z_torch_optimized(point_cloud, grid_info, radius=0.025):
             mask = dist_sq <= radius**2  # [grid_chunk, point_chunk]
             
             # Update sums and counts
-            for i in range(len(grid_chunk)):
-                valid_points = point_z_chunk[mask[i]]
-                if len(valid_points) > 0:
-                    sum_z[i] += torch.sum(valid_points)
-                    count[i] += len(valid_points)
+            # for i in range(len(grid_chunk)):
+            #     valid_points = point_z_chunk[mask[i]]
+            #     if len(valid_points) > 0:
+            #         sum_z[i] += torch.sum(valid_points)
+            #         count[i] += len(valid_points)
+            # mask: (grid_chunk_size, point_chunk_size)
+            # point_z_chunk: (point_chunk_size)
+
+            # Expand Z values to (1, point_chunk_size)
+            point_z_expanded = point_z_chunk.unsqueeze(0)  # [1, point_chunk_size]
+
+            # Masked sums across points for each grid center
+            sum_z_chunk = torch.sum(point_z_expanded * mask.float(), dim=1)  # [grid_chunk_size]
+
+            # Masked counts
+            count_chunk = torch.sum(mask, dim=1)  # [grid_chunk_size]
+
+            # Update totals
+            sum_z += sum_z_chunk
+            count += count_chunk
+
         
         # Compute averages for this grid chunk
         valid_mask = count > 0
@@ -407,7 +423,7 @@ def visualize_results(point_cloud, grid_info, slope_x, slope_y, subsample=10):
     plt.tight_layout()
     plt.show()
 
-def benchmark_grid_computation(point_cloud, grid_info, radius=0.025, repeat=3):
+def benchmark_grid_computation(point_cloud, grid_info, radius=0.05, repeat=3):
     """Benchmark different methods for computing grid Z values."""
     methods = {
         "NumPy": compute_grid_z_numpy,
@@ -476,7 +492,7 @@ def benchmark_slope_computation(grid_info, repeat=3):
         times = []
         
         # Warmup run
-        _ = method(grid_info)
+        slope_x, slope_y = method(grid_info)
         
         for i in range(repeat):
             start_time = time.time()
@@ -497,20 +513,125 @@ def benchmark_slope_computation(grid_info, repeat=3):
         
         # Calculate speedup relative to NumPy
         if name != "NumPy" and "NumPy" in results:
-            speedup = results["NumPy"]["time"] / best_time
-            print(f"  Speedup vs NumPy: {speedup:.2f}x")
+            # Avoid division by zero
+            if best_time > 0:
+                speedup = results["NumPy"]["time"] / best_time
+                print(f"  Speedup vs NumPy: {speedup:.2f}x")
+            else:
+                print(f"  Speedup vs NumPy: ∞ (too fast to measure accurately)")
         
         print()
     
     return results
 
+import faiss
+
+
+def compute_grid_z_faiss(point_cloud, grid_info, radius=0.025):
+    """Use FAISS (GPU-accelerated) for nearest neighbor search using k-NN and CPU-side averaging."""
+    # Create FAISS index (on CPU first for safer initialization)
+    index = faiss.IndexFlatL2(2)  # 2D index (x,y only)
+    index.add(point_cloud[:, :2].astype(np.float32))  # FAISS requires float32
+
+    # Move to GPU if available
+    if hasattr(faiss, 'StandardGpuResources'):
+        try:
+            res = faiss.StandardGpuResources()
+            index = faiss.index_cpu_to_gpu(res, 0, index)
+            print("  Using GPU-accelerated FAISS")
+        except Exception as e:
+            print(f"  Could not use GPU FAISS: {e}. Falling back to CPU.")
+
+    # Initialize results
+    grid_z = np.zeros(len(grid_info['centers']))
+    radius_sq = radius**2
+
+    # Determine maximum number of neighbors to fetch
+    point_density = len(point_cloud) / ((np.max(point_cloud[:, 0]) - np.min(point_cloud[:, 0])) * 
+                                        (np.max(point_cloud[:, 1]) - np.min(point_cloud[:, 1])))
+    avg_neighbors = int(np.ceil(point_density * np.pi * radius**2 * 2))  # Add safety factor of 2
+    k = min(max(30, avg_neighbors), 500)  # Limit between 30 and 500
+    print(f"  Using k={k} neighbors for FAISS search")
+
+    # Process grid points in batches
+    batch_size = 256
+    for i in range(0, len(grid_info['centers']), batch_size):
+        end = min(i + batch_size, len(grid_info['centers']))
+        query_batch = grid_info['centers'][i:end, :2].astype(np.float32)
+
+        # Use k-NN search and filter by distance
+        distances, indices = index.search(query_batch, k)
+
+        # Process each grid point
+        for j in range(end - i):
+            # Get valid neighbors (within radius and not padding)
+            valid_mask = (distances[j] <= radius_sq) & (indices[j] >= 0)
+            valid_indices = indices[j][valid_mask]
+
+            if len(valid_indices) > 0:
+                grid_z[i+j] = np.mean(point_cloud[valid_indices, 2])
+
+    # Reshape to grid
+    zz = grid_z.reshape(grid_info['size_y'], grid_info['size_x'])
+    return zz
+
+
+
+def compute_grid_z_numpy_parallel(point_cloud, grid_info, radius=0.05, n_jobs=-1):
+    """Optimized parallel CPU implementation using NumPy and KDTree."""
+    from joblib import Parallel, delayed
+    import multiprocessing
+    
+    # Build KDTree using only X and Y coordinates (done once for all workers)
+    tree = KDTree(point_cloud[:, :2])
+    
+    # Determine number of CPU cores to use
+    n_jobs = n_jobs if n_jobs > 0 else multiprocessing.cpu_count()
+    print(f"  Using {n_jobs} CPU cores")
+    
+    # Get total grid points
+    n_grid_points = len(grid_info['centers'])
+    
+    # Split work more evenly with larger chunks
+    chunk_size = max(100, n_grid_points // n_jobs)
+    
+    # Helper function to process a chunk of grid points
+    def process_chunk(start_idx, end_idx):
+        chunk_results = np.zeros(end_idx - start_idx)
+        for i in range(end_idx - start_idx):
+            idx = start_idx + i
+            center = grid_info['centers'][idx]
+            indices = tree.query_ball_point(center[:2], r=radius)
+            if indices:
+                chunk_results[i] = np.mean(point_cloud[indices, 2])
+        return chunk_results
+    
+    # Create chunks
+    chunks = [(i, min(i + chunk_size, n_grid_points)) 
+              for i in range(0, n_grid_points, chunk_size)]
+    
+    # Process chunks in parallel
+    results = Parallel(n_jobs=n_jobs, verbose=0)(
+        delayed(process_chunk)(start, end) for start, end in chunks
+    )
+    
+    # Combine results
+    grid_z = np.zeros(n_grid_points)
+    for i, (start, end) in enumerate(chunks):
+        grid_z[start:end] = results[i]
+    
+    # Reshape to grid
+    zz = grid_z.reshape(grid_info['size_y'], grid_info['size_x'])
+    
+    return zz
+
 def main():
     # Parameters
-    n_points = 500000   # 2 million points for a stress test
-    step_size = 0.05     # Grid step size (50mm)
-    radius = 0.025       # 25mm radius for finding nearest neighbors
-    x_range = (0, 3)     # X range for terrain
-    y_range = (0, 3)     # Y range for terrain
+    n_points = 10000000     # Half million points
+    step_size = 3.00      # Grid step size (50mm)
+    radius = 0.05        # 25mm radius for finding nearest neighbors
+    x_range = (0, 30)      # X range for terrain
+    y_range = (0, 30)      # Y range for terrain
     
     # Check CUDA availability and show memory info
     if torch.cuda.is_available():
@@ -535,18 +656,86 @@ def main():
     print(f"Creating grid with {step_size}m step size...")
     grid_info = create_grid_from_extremes(point_cloud, step_size)
     
-    # Benchmark grid computation methods
-    grid_results = benchmark_grid_computation(point_cloud, grid_info, radius)
+    # Define all methods to benchmark
+    methods = {
+        "NumPy": compute_grid_z_numpy,
+        "PyTorch (Basic)": compute_grid_z_torch,
+        #"PyTorch (Optimized)": compute_grid_z_torch_optimized,
+        "NumPy (Parallel)": lambda pc, gi, r: compute_grid_z_numpy_parallel(pc, gi, r, n_jobs=os.cpu_count())
+    }
     
-    # Benchmark slope computation methods
-    slope_results = benchmark_slope_computation(grid_info)
+    # Add FAISS method if CUDA is available
+    if torch.cuda.is_available():
+        try:
+            import faiss
+            methods["FAISS (GPU)"] = compute_grid_z_faiss
+            print("FAISS library detected, adding GPU-accelerated method to benchmark.")
+        except ImportError:
+            print("FAISS library not found. Skipping GPU-accelerated nearest neighbor method.")
     
-    # Use fastest method's results for visualization
-    fastest_grid_method = min(grid_results.items(), key=lambda x: x[1]["time"])[0]
-    fastest_slope_method = min(slope_results.items(), key=lambda x: x[1]["time"])[0]
+    # Print benchmark header
+    print(f"Point cloud size: {len(point_cloud):,} points")
+    print(f"Grid size: {grid_info['size_y']} × {grid_info['size_x']} = {len(grid_info['centers']):,} grid points")
+    print(f"Search radius: {radius*1000:.1f}mm\n")
     
-    slope_x = slope_results[fastest_slope_method]["slope_x"]
-    slope_y = slope_results[fastest_slope_method]["slope_y"]
+    # Run benchmarks
+    results = {}
+    best_time = float('inf')
+    best_method = None
+    
+    # Run each method with multiple repeats to get accurate timing
+    repeats = 3
+    
+    for name, method in methods.items():
+        print(f"Computing grid Z values using {name}...")
+        times = []
+        
+        try:
+            # Warmup run (not timed)
+            _ = method(point_cloud, grid_info, radius)
+            
+            # Timed runs
+            for i in range(repeats):
+                start_time = time.time()
+                grid_info['zz'] = method(point_cloud, grid_info, radius)
+                elapsed = time.time() - start_time
+                times.append(elapsed)
+                print(f"  Run {i+1}: {elapsed:.4f} seconds")
+            
+            # Calculate statistics
+            best_run = min(times)
+            print(f"  Best time: {best_run:.4f} seconds")
+            
+            # Compare to baseline NumPy
+            if name != "NumPy" and "NumPy" in results:
+                speedup = results["NumPy"]["time"] / best_run
+                print(f"  Speedup vs NumPy: {speedup:.2f}x")
+            
+            # Store results
+            results[name] = {
+                "time": best_run
+            }
+            
+            # Track best method
+            if best_run < best_time:
+                best_time = best_run
+                best_method = name
+        
+        except Exception as e:
+            print(f"  Error running {name}: {e}")
+            print(f"  Skipping this method.")
+        
+        print()
+    
+    # Report best method if any succeeded
+    if best_method:
+        print(f"Fastest method: {best_method} ({best_time:.4f} seconds)")
+    else:
+        print("No methods completed successfully.")
+    
+    # Compute slopes using advanced method
+    print("Computing slopes using advanced method...")
+    slope_x, slope_y = compute_slopes_advanced(grid_info)
     
     # Visualize results
     print("Visualizing results...")
