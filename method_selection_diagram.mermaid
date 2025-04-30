@@ -1,0 +1,18 @@
+flowchart LR
+    A[Start] --> B{Dataset Size?}
+    B -->|< 1M points| C[NumPy]
+    B -->|1-10M points| D{Multiple CPU cores?}
+    B -->|> 10M points| E{GPU Available?}
+    
+    D -->|Yes| F[NumPy Parallel]
+    D -->|No| G{GPU Available?}
+    
+    G -->|Yes| H[FAISS]
+    G -->|No| C
+    
+    E -->|Yes| H
+    E -->|No| F
+    
+    C --> J[End]
+    F --> J
+    H --> J

@@ -1,0 +1,35 @@
+classDiagram
+    class GridProcessor {
+        +generate_terrain_point_cloud(n_points, x_range, y_range, noise_level, seed)
+        +create_grid_from_extremes(point_cloud, step_size)
+        +compute_grid_z_numpy(point_cloud, grid_info, radius)
+        +compute_grid_z_numpy_parallel(point_cloud, grid_info, radius, n_jobs)
+        +compute_grid_z_torch(point_cloud, grid_info, radius)
+        +compute_grid_z_torch_optimized(point_cloud, grid_info, radius)
+        +compute_grid_z_faiss(point_cloud, grid_info, radius)
+        +compute_slopes_advanced(grid_info)
+        +compute_slopes_torch_optimized(grid_info)
+        +visualize_results(point_cloud, grid_info, slope_x, slope_y, subsample)
+    }
+    
+    class NormalProcessor {
+        +generate_hemisphere(n_points, radius, noise)
+        +generate_grid_centers(x_range, y_range, grid_size)
+        +compute_normals_numpy(point_cloud, k)
+        +compute_normals_torch(point_cloud, k)
+        +compute_normals_torch_optimized(point_cloud, k)
+        +compute_grid_normals_numpy(point_cloud, normals, grid_centers, radius)
+        +compute_grid_normals_torch(point_cloud, normals, grid_centers, radius)
+        +plot_results(point_cloud, normals, grid_centers, grid_normals, subsample)
+    }
+    
+    class DataStructures {
+        +point_cloud: numpy.ndarray
+        +grid_info: dict
+        +normals: numpy.ndarray/torch.Tensor
+        +grid_centers: numpy.ndarray
+        +slope_x, slope_y: numpy.ndarray
+    }
+    
+    GridProcessor -- DataStructures
+    NormalProcessor -- DataStructures

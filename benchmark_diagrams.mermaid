@@ -1,0 +1,82 @@
+sequenceDiagram
+    title Grid Computation Benchmark Sequence
+    
+    participant User
+    participant Main as Main Program
+    participant DataGen as Data Generator
+    participant GridGen as Grid Generator
+    participant NumPy as NumPy Method
+    participant NumPyParallel as NumPy Parallel
+    participant PyTorch as PyTorch Method
+    participant PyTorchOpt as PyTorch Optimized
+    participant FAISS as FAISS Method
+    participant SlopeCalc as Slope Calculator
+    participant Viz as Visualizer
+    
+    User->>Main: Start benchmark
+    Main->>DataGen: Generate point cloud data (n_points, range)
+    DataGen-->>Main: point_cloud
+    
+    Main->>GridGen: Create grid (point_cloud, step_size)
+    GridGen-->>Main: grid_info
+    
+    Main->>Main: Initialize benchmark dictionary
+    
+    Note over Main: For each method in benchmark
+    
+    Main->>NumPy: Warmup run
+    NumPy-->>Main: result (not timed)
+    
+    loop Repeat 3 times
+        Main->>NumPy: compute_grid_z_numpy(point_cloud, grid_info, radius)
+        NumPy-->>Main: grid_info['zz']
+        Main->>Main: Record time
+    end
+    
+    Main->>NumPyParallel: Warmup run
+    NumPyParallel-->>Main: result (not timed)
+    
+    loop Repeat 3 times
+        Main->>NumPyParallel: compute_grid_z_numpy_parallel(point_cloud, grid_info, radius)
+        NumPyParallel-->>Main: grid_info['zz']
+        Main->>Main: Record time
+    end
+    
+    Main->>PyTorch: Warmup run
+    PyTorch-->>Main: result (not timed)
+    
+    loop Repeat 3 times
+        Main->>PyTorch: compute_grid_z_torch(point_cloud, grid_info, radius)
+        PyTorch-->>Main: grid_info['zz']
+        Main->>Main: Record time
+    end
+    
+    Main->>PyTorchOpt: Warmup run
+    PyTorchOpt-->>Main: result (not timed)
+    
+    loop Repeat 3 times
+        Main->>PyTorchOpt: compute_grid_z_torch_optimized(point_cloud, grid_info, radius)
+        PyTorchOpt-->>Main: grid_info['zz']
+        Main->>Main: Record time
+    end
+    
+    alt FAISS is available
+        Main->>FAISS: Warmup run
+        FAISS-->>Main: result (not timed)
+        
+        loop Repeat 3 times
+            Main->>FAISS: compute_grid_z_faiss(point_cloud, grid_info, radius)
+            FAISS-->>Main: grid_info['zz']
+            Main->>Main: Record time
+        end
+    end
+    
+    Main->>Main: Determine fastest method
+    
+    Main->>SlopeCalc: compute_slopes_advanced(grid_info)
+    SlopeCalc-->>Main: slope_x, slope_y
+    
+    Main->>Viz: visualize_results(point_cloud, grid_info, slope_x, slope_y)
+    Viz-->>User: Display visualization
+    
+    Main->>User: Report benchmark results

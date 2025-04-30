@@ -1,0 +1,30 @@
+flowchart TD
+    A[Generate or Load Point Cloud] --> B[Create Grid from Point Cloud Extremes]
+    B --> C{Choose Method}
+    
+    C -->|NumPy| D1[Build KDTree from x,y coordinates]
+    D1 --> E1[For each grid point, find points within radius]
+    E1 --> F1[Calculate average Z-value]
+    F1 --> G1[Assign Z-value to grid point]
+    G1 --> H[Reshape to 2D grid]
+    
+    C -->|NumPy Parallel| D2[Build KDTree from x,y coordinates]
+    D2 --> E2[Divide grid points into chunks]
+    E2 --> F2[Process chunks in parallel]
+    F2 --> G2[Combine results]
+    G2 --> H
+    
+    C -->|PyTorch| D3[Move data to GPU]
+    D3 --> E3[Process in batches]
+    E3 --> F3[Calculate distances and find neighbors]
+    F3 --> G3[Compute average Z-values on GPU]
+    G3 --> H
+    
+    C -->|FAISS| D4[Create FAISS index]
+    D4 --> E4[Find k nearest neighbors]
+    E4 --> F4[Filter by distance]
+    F4 --> G4[Calculate Z-value averages]
+    G4 --> H
+    
+    H --> I[Compute Slopes]
+    I --> J[Visualize Results]
