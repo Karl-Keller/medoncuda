@@ -1,0 +1,24 @@
+flowchart TD
+    A[Start] --> B{Average points per grid cell?}
+    B -->|< 100 points| C[NumPy]
+    B -->|100-1000 points| D{Multiple CPU cores?}
+    B -->|> 1000 points| E{GPU Available?}
+    
+    D -->|Yes| F[NumPy Parallel]
+    D -->|No| G{GPU Available?}
+    
+    G -->|Yes| H[FAISS]
+    G -->|No| C
+    
+    E -->|Yes| H
+    E -->|No| F
+    
+    C --> I{Grid size?}
+    F --> I
+    H --> I
+    
+    I -->|< 100x100| J[Standard slope computation]
+    I -->|≥ 100x100| K[Optimized slope computation]
+    
+    J --> L[End]
+    K --> L
