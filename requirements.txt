@@ -1,8 +1,3 @@
-# medoncuda
-Dedicated to high speed processing converting numpy to GPU via cupy, torch, etc.
-
-Environment Setup
-
 torch - pip
 torchvision - pip  //use --index-url https://download.pytorch.org/whl/cu121 or whatever CUDA version is loaded
 numpy - conda
